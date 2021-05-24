@@ -1,180 +1,95 @@
-#!/usr/bin/python3
+"""Example of how to create a Peripheral device/GATT Server"""
+# Standard modules
+import logging
+import random
 
-"""Copyright (c) 2019, Douglas Otwell
+# Bluezero modules
+from bluezero import async_tools
+from bluezero import adapter
+from bluezero import peripheral
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+# constants
+# Custom service uuid
+CPU_TMP_SRVC = '12341000-1234-1234-1234-123456789abc'
+# https://www.bluetooth.com/specifications/assigned-numbers/
+# Bluetooth SIG adopted UUID for Temperature characteristic
+CPU_TMP_CHRC = '2A6E'
+# Bluetooth SIG adopted UUID for Characteristic Presentation Format
+CPU_FMT_DSCP = '2904'
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-"""
+def read_value():
+    """
+    Example read callback. Value returned needs to a list of bytes/integers
+    in little endian format.
+    This one does a mock reading CPU temperature callback.
+    Return list of integer values.
+    Bluetooth expects the values to be in little endian format and the
+    temperature characteristic to be an sint16 (signed & 2 octets) and that
+    is what dictates the values to be used in the int.to_bytes method call.
+    :return: list of uint8 values
+    """
+    cpu_value = random.randrange(3200, 5310, 10) / 100
+    return list(int(cpu_value * 100).to_bytes(2,
+                                              byteorder='little', signed=True))
 
-import dbus
 
-from advertisement import Advertisement
-from service import Application, Service, Characteristic, Descriptor
-from gpiozero import CPUTemperature
+def update_value(characteristic):
+    """
+    Example of callback to send notifications
+    :param characteristic:
+    :return: boolean to indicate if timer should continue
+    """
+    # read/calculate new value.
+    new_value = read_value()
+    # Causes characteristic to be updated and send notification
+    characteristic.set_value(new_value)
+    # Return True to continue notifying. Return a False will stop notifications
+    # Getting the value from the characteristic of if it is notifying
+    return characteristic.is_notifying
 
-GATT_CHRC_IFACE = "org.bluez.GattCharacteristic1"
-NOTIFY_TIMEOUT = 5000
 
-class ThermometerAdvertisement(Advertisement):
-    def __init__(self, index):
-        Advertisement.__init__(self, index, "peripheral")
-        self.add_local_name("Thermometer")
-        self.include_tx_power = True
+def notify_callback(notifying, characteristic):
+    """
+    Noitificaton callback example. In this case used to start a timer event
+    which calls the update callback ever 2 seconds
+    :param notifying: boolean for start or stop of notifications
+    :param characteristic: The python object for this characteristic
+    """
+    if notifying:
+        async_tools.add_timer_seconds(2, update_value, characteristic)
 
-class ThermometerService(Service):
-    THERMOMETER_SVC_UUID = "00000001-710e-4a5b-8d75-3e5b444bc3cf"
 
-    def __init__(self, index):
-        self.farenheit = True
+def main(adapter_address):
+    """Creation of peripheral"""
+    logger = logging.getLogger('localGATT')
+    logger.setLevel(logging.DEBUG)
+    # Example of the output from read_value
+    print('CPU temperature is {}\u00B0C'.format(
+        int.from_bytes(read_value(), byteorder='little', signed=True)/100))
+    # Create peripheral
+    cpu_monitor = peripheral.Peripheral(adapter_address,
+                                        local_name='CPU Monitor',
+                                        appearance=1344)
+    # Add service
+    cpu_monitor.add_service(srv_id=1, uuid=CPU_TMP_SRVC, primary=True)
+    # Add characteristic
+    cpu_monitor.add_characteristic(srv_id=1, chr_id=1, uuid=CPU_TMP_CHRC,
+                                   value=[], notifying=False,
+                                   flags=['read', 'notify'],
+                                   read_callback=read_value,
+                                   write_callback=None,
+                                   notify_callback=notify_callback
+                                   )
+    # Add descriptor
+    cpu_monitor.add_descriptor(srv_id=1, chr_id=1, dsc_id=1, uuid=CPU_FMT_DSCP,
+                               value=[0x0E, 0xFE, 0x2F, 0x27, 0x01, 0x00,
+                                      0x00],
+                               flags=['read'])
+    # Publish peripheral and start event loop
+    cpu_monitor.publish()
 
-        Service.__init__(self, index, self.THERMOMETER_SVC_UUID, True)
-        self.add_characteristic(TempCharacteristic(self))
-        self.add_characteristic(UnitCharacteristic(self))
 
-    def is_farenheit(self):
-        return self.farenheit
-
-    def set_farenheit(self, farenheit):
-        self.farenheit = farenheit
-
-class TempCharacteristic(Characteristic):
-    TEMP_CHARACTERISTIC_UUID = "00000002-710e-4a5b-8d75-3e5b444bc3cf"
-
-    def __init__(self, service):
-        self.notifying = False
-
-        Characteristic.__init__(
-                self, self.TEMP_CHARACTERISTIC_UUID,
-                ["notify", "read"], service)
-        self.add_descriptor(TempDescriptor(self))
-
-    def get_temperature(self):
-        value = []
-        unit = "C"
-
-        cpu = CPUTemperature()
-        temp = cpu.temperature
-        if self.service.is_farenheit():
-            temp = (temp * 1.8) + 32
-            unit = "F"
-
-        strtemp = str(round(temp, 1)) + " " + unit
-        for c in strtemp:
-            value.append(dbus.Byte(c.encode()))
-
-        return value
-
-    def set_temperature_callback(self):
-        if self.notifying:
-            value = self.get_temperature()
-            self.PropertiesChanged(GATT_CHRC_IFACE, {"Value": value}, [])
-
-        return self.notifying
-
-    def StartNotify(self):
-        if self.notifying:
-            return
-
-        self.notifying = True
-
-        value = self.get_temperature()
-        self.PropertiesChanged(GATT_CHRC_IFACE, {"Value": value}, [])
-        self.add_timeout(NOTIFY_TIMEOUT, self.set_temperature_callback)
-
-    def StopNotify(self):
-        self.notifying = False
-
-    def ReadValue(self, options):
-        value = self.get_temperature()
-
-        return value
-
-class TempDescriptor(Descriptor):
-    TEMP_DESCRIPTOR_UUID = "2901"
-    TEMP_DESCRIPTOR_VALUE = "CPU Temperature"
-
-    def __init__(self, characteristic):
-        Descriptor.__init__(
-                self, self.TEMP_DESCRIPTOR_UUID,
-                ["read"],
-                characteristic)
-
-    def ReadValue(self, options):
-        value = []
-        desc = self.TEMP_DESCRIPTOR_VALUE
-
-        for c in desc:
-            value.append(dbus.Byte(c.encode()))
-
-        return value
-
-class UnitCharacteristic(Characteristic):
-    UNIT_CHARACTERISTIC_UUID = "00000003-710e-4a5b-8d75-3e5b444bc3cf"
-
-    def __init__(self, service):
-        Characteristic.__init__(
-                self, self.UNIT_CHARACTERISTIC_UUID,
-                ["read", "write"], service)
-        self.add_descriptor(UnitDescriptor(self))
-
-    def WriteValue(self, value, options):
-        val = str(value[0]).upper()
-        if val == "C":
-            self.service.set_farenheit(False)
-        elif val == "F":
-            self.service.set_farenheit(True)
-
-    def ReadValue(self, options):
-        value = []
-
-        if self.service.is_farenheit(): val = "F"
-        else: val = "C"
-        value.append(dbus.Byte(val.encode()))
-
-        return value
-
-class UnitDescriptor(Descriptor):
-    UNIT_DESCRIPTOR_UUID = "2901"
-    UNIT_DESCRIPTOR_VALUE = "Temperature Units (F or C)"
-
-    def __init__(self, characteristic):
-        Descriptor.__init__(
-                self, self.UNIT_DESCRIPTOR_UUID,
-                ["read"],
-                characteristic)
-
-    def ReadValue(self, options):
-        value = []
-        desc = self.UNIT_DESCRIPTOR_VALUE
-
-        for c in desc:
-            value.append(dbus.Byte(c.encode()))
-
-        return value
-
-app = Application()
-app.add_service(ThermometerService(0))
-app.register()
-
-adv = ThermometerAdvertisement(0)
-adv.register()
-
-try:
-    app.run()
-except KeyboardInterrupt:
-    app.quit()
+if __name__ == '__main__':
+    # Get the default adapter address and pass it to main
+    main(list(adapter.Adapter.available())[0].address)
