@@ -30,6 +30,8 @@ def read_value():
     :return: list of uint8 values
     """
     cpu_value = random.randrange(3200, 5310, 10) / 100
+    print('Random number representing CPU temp is {}\u00B0C.'.format(
+        int.from_bytes(read_value(), byteorder='little', signed=True) / 100))
     return list(int(cpu_value * 100).to_bytes(2,
                                               byteorder='little', signed=True))
 
@@ -51,13 +53,13 @@ def update_value(characteristic):
 
 def notify_callback(notifying, characteristic):
     """
-    Noitificaton callback example. In this case used to start a timer event
-    which calls the update callback ever 2 seconds
+    Notification callback example. In this case used to start a timer event
+    which calls the update callback every 1 seconds
     :param notifying: boolean for start or stop of notifications
     :param characteristic: The python object for this characteristic
     """
     if notifying:
-        async_tools.add_timer_seconds(2, update_value, characteristic)
+        async_tools.add_timer_seconds(1, update_value, characteristic)
 
 
 def main(adapter_address):
@@ -65,29 +67,32 @@ def main(adapter_address):
     logger = logging.getLogger('localGATT')
     logger.setLevel(logging.DEBUG)
     # Example of the output from read_value
-    print('CPU temperature is {}\u00B0C'.format(
-        int.from_bytes(read_value(), byteorder='little', signed=True)/100))
+    print('Random number representing CPU temp is {}\u00B0C.'.format(
+        int.from_bytes(read_value(), byteorder='little', signed=True) / 100))
     # Create peripheral
-    cpu_monitor = peripheral.Peripheral(adapter_address,
-                                        local_name='CPU Monitor',
-                                        appearance=1344)
+    raspberry_pi_monitor = peripheral.Peripheral(adapter_address,
+                                                 local_name='Avrio Device',
+                                                 appearance=1344)
     # Add service
-    cpu_monitor.add_service(srv_id=1, uuid=CPU_TMP_SRVC, primary=True)
+    raspberry_pi_monitor.add_service(srv_id=1, uuid=CPU_TMP_SRVC, primary=True)
     # Add characteristic
-    cpu_monitor.add_characteristic(srv_id=1, chr_id=1, uuid=CPU_TMP_CHRC,
-                                   value=[], notifying=False,
-                                   flags=['read', 'notify'],
-                                   read_callback=read_value,
-                                   write_callback=None,
-                                   notify_callback=notify_callback
-                                   )
+    raspberry_pi_monitor.add_characteristic(srv_id=1, chr_id=1,
+                                            uuid=CPU_TMP_CHRC,
+                                            value=[], notifying=False,
+                                            flags=['read', 'notify'],
+                                            read_callback=read_value,
+                                            write_callback=None,
+                                            notify_callback=notify_callback
+                                            )
     # Add descriptor
-    cpu_monitor.add_descriptor(srv_id=1, chr_id=1, dsc_id=1, uuid=CPU_FMT_DSCP,
-                               value=[0x0E, 0xFE, 0x2F, 0x27, 0x01, 0x00,
-                                      0x00],
-                               flags=['read'])
+    raspberry_pi_monitor.add_descriptor(srv_id=1, chr_id=1, dsc_id=1,
+                                        uuid=CPU_FMT_DSCP,
+                                        value=[0x0E, 0xFE, 0x2F, 0x27, 0x01,
+                                               0x00,
+                                               0x00],
+                                        flags=['read'])
     # Publish peripheral and start event loop
-    cpu_monitor.publish()
+    raspberry_pi_monitor.publish()
 
 
 if __name__ == '__main__':
